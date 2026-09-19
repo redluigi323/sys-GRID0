@@ -35,6 +35,10 @@ namespace ztnx {
     constexpr const char *BsdLogPath  = "sdmc:/config/sys-zerotier/bsd.log";
     constexpr const char *NifmLogPath = "sdmc:/config/sys-zerotier/nifm.log";
     constexpr const char *BootLogPath = "sdmc:/config/sys-zerotier/boot.log";
+    constexpr const char *PiaFirstRequestCapturePath = "sdmc:/config/sys-zerotier/pia-first-request.bin";
+    constexpr const char *PiaFirstReplyCapturePath   = "sdmc:/config/sys-zerotier/pia-first-reply.bin";
+    constexpr const char *PiaRequestCapturePath = "sdmc:/config/sys-zerotier/pia-request.bin";
+    constexpr const char *PiaReplyCapturePath   = "sdmc:/config/sys-zerotier/pia-reply.bin";
 
     /* ZeroTier's transport port. 9993 is the default and the one most home
      * routers already have a working UPnP or NAT-PMP mapping for. */
@@ -73,7 +77,7 @@ namespace ztnx {
                                 const void *data, unsigned int len);
         bool LanSocketReadable(int vfd);
         int  ReceiveLanDatagram(int vfd, void *data, unsigned int max,
-                                u32 *src_ip, u16 *src_port);
+                                u32 *src_ip, u16 *src_port, bool peek = false);
         void CloseLanSocket(int vfd);
 
         /* Snapshot of the ZeroTier IPv4 identity, in host order. */
@@ -133,6 +137,15 @@ namespace ztnx {
 
         ZT_Node   *m_node   = nullptr;
         int        m_wireFd = -1;          /* primary or adaptive UDP socket on bsd:s */
+        int        m_mappedFd = -1;
+        int64_t    m_mappedSocketId = 0;
+        uint16_t   m_mappedPort = 0;
+        bool       m_natEnabled = false;
+        int64_t    m_natRetryMs = 0;
+        uint32_t   m_natAddress = 0;
+        uint16_t   m_natPublicPort = 0;
+        void maintainNatWire();
+        void closeNatWire();
         uint16_t   m_wireLocalPort = 0;
         bool       m_wireEphemeral = false;
         uint64_t   m_nwid   = 0;
@@ -225,6 +238,7 @@ namespace ztnx {
 
     /* Whole-file write, exposed for the mitm observation log. */
     bool WriteTextFile(const char *path, const char *text);
+    bool WriteBinaryFile(const char *path, const void *data, size_t len);
 
     /* ---- sleep gate -------------------------------------------------------
      *

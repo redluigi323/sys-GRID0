@@ -71,6 +71,8 @@ dist/sys-zerotier.zip
 atmosphere/contents/4200000000005A54/exefs.nsp
 atmosphere/contents/4200000000005A54/flags/boot2.flag
 switch/.overlays/sys-zerotier.ovl
+licenses/sys-zerotier/MiniUPnPc.txt
+licenses/sys-zerotier/libnatpmp.txt
 ```
 
 Extract the archive at the root of the Switch SD card. The sysmodule creates
@@ -97,6 +99,11 @@ The generated `config.ini` enables the sysmodule, BSD MITM and NIFM MITM by
 default. Existing explicit settings are preserved. Detailed packet/service
 logging is off by default and can be enabled from the overlay while diagnosing
 a compatibility issue.
+
+Router mapping is enabled by default. Set `port_mapping = 0` in `config.ini`
+and reboot to disable it. It tries finite NAT-PMP/UPnP UDP leases on the
+physical router; it cannot bypass carrier-grade NAT or a UDP-blocking firewall.
+See [lifecycle/NAT validation](LIFECYCLE_NAT_TESTING.md) for test steps and limits.
 
 ## Tests and diagnostics
 

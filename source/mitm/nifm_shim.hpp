@@ -124,6 +124,9 @@ namespace ztnx::mitm {
       public:
         NifmRequestShim(Service forward, u64 pid, u64 program_id) :
             m_forward(forward), m_pid(pid), m_program_id(program_id) { }
+        ~NifmRequestShim() { serviceClose(std::addressof(m_forward)); }
+        NifmRequestShim(const NifmRequestShim &) = delete;
+        NifmRequestShim &operator=(const NifmRequestShim &) = delete;
         #define ZTNX_DECLARE(C, I, R, N, A, AN, V0, V1) R N A;
         AMS_ZTNX_NIFM_REQUEST(NifmRequestShim, ZTNX_DECLARE)
         #undef ZTNX_DECLARE
@@ -135,6 +138,9 @@ namespace ztnx::mitm {
       public:
         NifmGeneralShim(Service forward, u64 pid, u64 program_id) :
             m_forward(forward), m_pid(pid), m_program_id(program_id) { }
+        ~NifmGeneralShim() { serviceClose(std::addressof(m_forward)); }
+        NifmGeneralShim(const NifmGeneralShim &) = delete;
+        NifmGeneralShim &operator=(const NifmGeneralShim &) = delete;
         #define ZTNX_DECLARE(C, I, R, N, A, AN, V0, V1) R N A;
         AMS_ZTNX_NIFM_GENERAL(NifmGeneralShim, ZTNX_DECLARE)
         #undef ZTNX_DECLARE

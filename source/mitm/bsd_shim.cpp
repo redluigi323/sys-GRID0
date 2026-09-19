@@ -12,6 +12,7 @@
 #include "bsd_shim.hpp"
 #include "lan_titles.hpp"
 #include "../zt_port.hpp"
+#include "../net/lifetime.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -28,7 +29,7 @@ namespace ztnx::mitm {
         /* Splatoon creates a 13-session BSD clone pool during Shoal startup.
          * Its control setup and teardown alone consume almost the old 64-line
          * ring, hiding the NIFM command that preceded an nnSdk abort. */
-        constexpr int    LogLines   = 64;
+        constexpr int    LogLines   = 96;
         constexpr size_t LogLineLen = 112;
         constexpr size_t LogBytes = LogLines * LogLineLen;
         /* These forensic buffers used to cost about 36 KiB of resident .bss
@@ -120,6 +121,126 @@ namespace ztnx::mitm {
         };
         FlowCounter g_flows[FlowSlots] = {};
         ams::os::SdkMutex g_flowLock;
+
+        /* PIA 5.7--5.45 browse traffic is cryptographically challenged. UDP
+         * delivery alone therefore cannot tell us whether a later reply is
+         * usable. Retain only hashes/counters from the latest request so the
+         * diagnostic log can prove whether the host's advertised session-key
+         * parameter follows the request that triggered its reply. */
+        struct BrowseRequestObservation {
+            u64 pid;
+            s32 fd;
+            u32 srcIp;
+            u64 counter;
+            u32 keyHash;
+            u32 count;
+        };
+        BrowseRequestObservation g_last_browse_request{};
+        ams::os::SdkMutex g_browse_observation_lock;
+
+        /* Capture matched PIA browse exchanges for offline validation.
+         * The game-specific AES key is outside this shim, so hashes cannot
+         * distinguish a bad challenge response from a bad advertised host.
+         * Keep the first and latest request/reply pair for the current process
+         * and network id. (Different PIA 5.9 games both begin at 11f3c000.)
+         * That lets one run compare the room before a peer joins with the same
+         * still-open room after it leaves. Allocation is diagnostics-only
+         * and bounded to seven protocol-maximum packets (9548 bytes, including
+         * the two reusable flush copies). */
+        constexpr size_t PiaPacketMax = 1364;
+        u8 *g_pia_latest_request = nullptr;
+        u8 *g_pia_first_request = nullptr;
+        u8 *g_pia_first_reply = nullptr;
+        u8 *g_pia_capture_request = nullptr;
+        u8 *g_pia_capture_reply = nullptr;
+        u8 *g_pia_flush_request = nullptr;
+        u8 *g_pia_flush_reply = nullptr;
+        size_t g_pia_latest_request_len = 0;
+        size_t g_pia_first_request_len = 0;
+        size_t g_pia_first_reply_len = 0;
+        size_t g_pia_capture_request_len = 0;
+        size_t g_pia_capture_reply_len = 0;
+        u64 g_pia_capture_pid = 0;
+        u32 g_pia_capture_network_id = 0;
+        bool g_pia_first_dirty = false;
+        bool g_pia_capture_dirty = false;
+
+        bool EnsurePiaCaptureBuffersLocked() {
+            if (g_pia_latest_request != nullptr && g_pia_first_request != nullptr &&
+                g_pia_first_reply != nullptr && g_pia_capture_request != nullptr &&
+                g_pia_capture_reply != nullptr && g_pia_flush_request != nullptr &&
+                g_pia_flush_reply != nullptr) {
+                return true;
+            }
+            u8 *latest = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            u8 *first_request = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            u8 *first_reply = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            u8 *request = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            u8 *reply = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            u8 *flush_request = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            u8 *flush_reply = static_cast<u8 *>(std::malloc(PiaPacketMax));
+            if (latest == nullptr || first_request == nullptr || first_reply == nullptr ||
+                request == nullptr || reply == nullptr || flush_request == nullptr ||
+                flush_reply == nullptr) {
+                std::free(latest);
+                std::free(first_request);
+                std::free(first_reply);
+                std::free(request);
+                std::free(reply);
+                std::free(flush_request);
+                std::free(flush_reply);
+                return false;
+            }
+            g_pia_latest_request = latest;
+            g_pia_first_request = first_request;
+            g_pia_first_reply = first_reply;
+            g_pia_capture_request = request;
+            g_pia_capture_reply = reply;
+            g_pia_flush_request = flush_request;
+            g_pia_flush_reply = flush_reply;
+            return true;
+        }
+
+        void FlushPiaCapture() {
+            size_t request_len = 0;
+            size_t reply_len = 0;
+            bool write_first = false;
+            {
+                std::scoped_lock lk(g_browse_observation_lock);
+                if (!g_pia_first_dirty && !g_pia_capture_dirty) { return; }
+                if (!EnsurePiaCaptureBuffersLocked()) { return; }
+                if (g_pia_first_dirty) {
+                    request_len = g_pia_first_request_len;
+                    reply_len = g_pia_first_reply_len;
+                    std::memcpy(g_pia_flush_request, g_pia_first_request, request_len);
+                    std::memcpy(g_pia_flush_reply, g_pia_first_reply, reply_len);
+                    g_pia_first_dirty = false;
+                    write_first = true;
+                }
+            }
+            if (write_first) {
+                (void)ztnx::WriteBinaryFile(PiaFirstRequestCapturePath,
+                                            g_pia_flush_request, request_len);
+                (void)ztnx::WriteBinaryFile(PiaFirstReplyCapturePath,
+                                            g_pia_flush_reply, reply_len);
+            }
+
+            request_len = 0;
+            reply_len = 0;
+            {
+                std::scoped_lock lk(g_browse_observation_lock);
+                if (!g_pia_capture_dirty || !EnsurePiaCaptureBuffersLocked()) { return; }
+                request_len = g_pia_capture_request_len;
+                reply_len = g_pia_capture_reply_len;
+                std::memcpy(g_pia_flush_request, g_pia_capture_request, request_len);
+                std::memcpy(g_pia_flush_reply, g_pia_capture_reply, reply_len);
+                g_pia_capture_dirty = false;
+            }
+            (void)ztnx::WriteBinaryFile(PiaRequestCapturePath,
+                                        g_pia_flush_request, request_len);
+            (void)ztnx::WriteBinaryFile(PiaReplyCapturePath,
+                                        g_pia_flush_reply, reply_len);
+        }
 
         /* sendmmsg serialises scatter/gather vectors into one IPC buffer.
          * PIA browse replies are at most 1364 bytes, so one bounded assembly
@@ -219,21 +340,26 @@ namespace ztnx::mitm {
     }
 
     void FlushObservations() {
-        std::scoped_lock lk(g_logLock);
-        if (!g_logDirty || g_log == nullptr || g_flushText == nullptr) { return; }
-        g_logDirty = false;
+        {
+            std::scoped_lock lk(g_logLock);
+            if (g_logDirty && g_log != nullptr && g_flushText != nullptr) {
+                g_logDirty = false;
 
-        size_t off = 0;
-        const int first = (g_logCount > LogLines) ? (g_logCount - LogLines) : 0;
-        for (int i = first; i < g_logCount && off + LogLineLen + 2 < LogBytes + 64; ++i) {
-            const char *line = g_log + (i % LogLines) * LogLineLen;
-            const size_t len = std::strlen(line);
-            std::memcpy(g_flushText + off, line, len);
-            off += len;
-            g_flushText[off++] = '\n';
+                size_t off = 0;
+                const int first = (g_logCount > LogLines) ? (g_logCount - LogLines) : 0;
+                for (int i = first; i < g_logCount &&
+                     off + LogLineLen + 2 < LogBytes + 64; ++i) {
+                    const char *line = g_log + (i % LogLines) * LogLineLen;
+                    const size_t len = std::strlen(line);
+                    std::memcpy(g_flushText + off, line, len);
+                    off += len;
+                    g_flushText[off++] = '\n';
+                }
+                g_flushText[off] = '\0';
+                ztnx::WriteTextFile(BsdLogPath, g_flushText);
+            }
         }
-        g_flushText[off] = '\0';
-        ztnx::WriteTextFile(BsdLogPath, g_flushText);
+        FlushPiaCapture();
     }
 
     namespace {
@@ -245,17 +371,36 @@ namespace ztnx::mitm {
          * ryu_ldn_nx (a working bsd:u MITM) documents exactly the same failure
          * and uses exactly this workaround: keep a reference forever so the
          * shared_ptr never reaches zero and serviceClose is never called. The
-         * leak is one Service handle per torn-down session, bounded by the
-         * server/session limits and the number of times a game restarts its
-         * socket layer, and is very much cheaper than a hang.
+         * retention is one Service handle per torn-down session. The node
+         * maintenance pass releases them after confirmed process exit; never
+         * close a live client's retained sessions merely to hit a size cap.
          *
          * Why it plausibly matters here: some nnSdk clients create and discard
          * a session before command 0 lands. That is precisely an unregistered
          * session. Registered sessions are deliberately excluded: real bsd
          * owns a copy of their transfer-memory handle, and retaining one past
          * socket teardown leaves the pages locked for the next initialization. */
-        std::vector<std::shared_ptr<::Service>> g_parked_forward_services;
+        struct ParkedService { u64 pid; std::shared_ptr<::Service> service; };
+        std::vector<ParkedService> g_parked_forward_services;
         ams::os::SdkMutex                       g_parked_lock;
+
+        bool ProcessHasExited(u64 pid) {
+            u64 live[128]{};
+            s32 count = 0;
+            const auto rc = svcGetProcessList(&count, live, 128);
+            return net::ProcessListConfirmsExit(pid, live, count, 128, R_SUCCEEDED(rc));
+        }
+
+        void ReleaseRetiredService(std::shared_ptr<::Service> &service) {
+            if (service && service->own_handle && service->session != INVALID_HANDLE) {
+                /* These forward services are non-domain sessions. Skip the
+                 * synchronous CMIF close, which can hang on an abandoned
+                 * session. Caller must prove process exit or full BSD shutdown. */
+                svcCloseHandle(service->session);
+                *service = {};
+            }
+            service.reset();
+        }
 
         /* bsd:u sessions opened per client process, counted monotonically in
          * ShouldMitm. A session teardown must not decrement this counter: the
@@ -420,18 +565,28 @@ namespace ztnx::mitm {
 
         void ForgetLanSocket(u64 pid, s32 fd) {
             s32 vfd = net::InvalidSocket;
+            u16 bound_port = 0;
             bool found = false;
             {
                 std::scoped_lock lk(g_lan_sockets_lock);
                 if (LanSocket *s = FindLanSocketLocked(pid, fd); s != nullptr) {
                     found = true;
                     vfd = s->vnetFd;
+                    bound_port = s->boundPort;
                     *s = LanSocket{};
                 }
             }
             if (vfd != net::InvalidSocket && g_port != nullptr) { g_port->CloseLanSocket(vfd); }
             if (found) {
                 Note("Close shadow    fd %d released", fd);
+            }
+            if (bound_port == 30000) {
+                std::scoped_lock lk(g_browse_observation_lock);
+                if (g_last_browse_request.pid == pid &&
+                    g_last_browse_request.fd == fd) {
+                    g_last_browse_request = BrowseRequestObservation{};
+                    g_pia_latest_request_len = 0;
+                }
             }
         }
 
@@ -457,6 +612,10 @@ namespace ztnx::mitm {
             }
             if (g_port != nullptr) {
                 for (int i = 0; i < count; ++i) { g_port->CloseLanSocket(vfds[i]); }
+            }
+            {
+                std::scoped_lock lk(g_browse_observation_lock);
+                if (g_last_browse_request.pid == pid) { g_last_browse_request = {}; }
             }
             return count;
         }
@@ -532,8 +691,69 @@ namespace ztnx::mitm {
                    (static_cast<u32>(p[2]) << 8) | p[3];
         }
 
-        bool MirrorLanPayload(s32 fd, s32 vfd, u32 dst_ip, u16 dst_port,
-                              bool broadcast, const void *data, size_t len) {
+        u64 ReadBe64(const u8 *p) {
+            return (static_cast<u64>(ReadBe32(p)) << 32) | ReadBe32(p + 4);
+        }
+
+        u32 Fingerprint32(const u8 *p, size_t len) {
+            /* FNV-1a is sufficient here: this is a change detector in an
+             * opt-in trace, not a cryptographic decision. Never log keys. */
+            u32 hash = 2166136261u;
+            for (size_t i = 0; i < len; ++i) {
+                hash ^= p[i];
+                hash *= 16777619u;
+            }
+            return hash;
+        }
+
+        int FindIpOffset(const u8 *data, size_t len, u32 ip) {
+            if (data == nullptr || len < 4 || ip == 0) { return -1; }
+            const u8 bytes[4] = {
+                static_cast<u8>(ip >> 24), static_cast<u8>(ip >> 16),
+                static_cast<u8>(ip >> 8), static_cast<u8>(ip)
+            };
+            for (size_t i = 0; i + sizeof(bytes) <= len; ++i) {
+                if (std::memcmp(data + i, bytes, sizeof(bytes)) == 0) {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        }
+
+        void ObserveBrowseRequest(u64 pid, s32 fd, const void *data, size_t len,
+                                  u32 src_ip, u16 src_port) {
+            if (!ztnx::DiagnosticsEnabled()) { return; }
+            const u8 *packet = static_cast<const u8 *>(data);
+            if (packet == nullptr || len < 5 || packet[0] != 0 || src_port != 30000) {
+                return;
+            }
+            const u32 criteria_size = ReadBe32(packet + 1);
+            const size_t challenge_offset = 5 + static_cast<size_t>(criteria_size);
+            if (challenge_offset > len || len - challenge_offset < 42) { return; }
+            const u8 *challenge = packet + challenge_offset;
+            const u64 counter = ReadBe64(challenge + 2);
+            const u32 key_hash = Fingerprint32(challenge + 10, 16);
+            u32 count = 0;
+            {
+                std::scoped_lock lk(g_browse_observation_lock);
+                count = g_last_browse_request.count + 1;
+                g_last_browse_request = { pid, fd, src_ip, counter, key_hash, count };
+                if (len <= PiaPacketMax && EnsurePiaCaptureBuffersLocked()) {
+                    std::memcpy(g_pia_latest_request, data, len);
+                    g_pia_latest_request_len = len;
+                }
+            }
+            if ((count & (count - 1)) == 0) {
+                Note("[%8llu] browse req fd %d v%u enc%u ctr %llx key %08x from %08x x%u",
+                     (unsigned long long)(armGetSystemTick() / 19200), fd,
+                     (unsigned)challenge[0], (unsigned)challenge[1],
+                     (unsigned long long)counter, key_hash, src_ip, count);
+            }
+        }
+
+        bool MirrorLanPayload(u64 pid, s32 fd, s32 vfd, u32 dst_ip,
+                              u16 dst_port, bool broadcast,
+                              const void *data, size_t len) {
             if (g_port == nullptr) { return false; }
             if (dst_port != 30000 || data == nullptr || len < 5 ||
                 static_cast<const u8 *>(data)[0] != 1) {
@@ -551,17 +771,96 @@ namespace ztnx::mitm {
             const u8 *packet = static_cast<const u8 *>(data);
             const u32 session_size = ReadBe32(packet + 1);
             const size_t body_size = std::min(len - 5, static_cast<size_t>(session_size));
+            const u8 *body = packet + 5;
+            const u32 network_id = body_size >= 8 ? ReadBe32(body + 4) : 0;
+            const u16 players = body_size > 0x21 ?
+                static_cast<u16>((body[0x20] << 8) | body[0x21]) : 0xffff;
             u32 managed_ip = 0;
             u32 physical_ip = 0;
             {
                 std::scoped_lock lk(g_lan_sockets_lock);
                 physical_ip = g_physicalIp;
             }
+            (void)g_port->GetLanIpConfig(std::addressof(managed_ip), nullptr);
+
+            /* Snapshot the exact request and byte-for-byte reply together.
+             * The destination check prevents pairing this response with an
+             * unrelated peer's most recent broadcast. */
+            {
+                std::scoped_lock lk(g_browse_observation_lock);
+                if (len <= PiaPacketMax && g_pia_latest_request_len != 0 &&
+                    g_last_browse_request.pid == pid &&
+                    g_last_browse_request.srcIp == dst_ip &&
+                    EnsurePiaCaptureBuffersLocked()) {
+                    std::memcpy(g_pia_capture_request, g_pia_latest_request,
+                                g_pia_latest_request_len);
+                    std::memcpy(g_pia_capture_reply, data, len);
+                    g_pia_capture_request_len = g_pia_latest_request_len;
+                    g_pia_capture_reply_len = len;
+                    g_pia_capture_dirty = true;
+                    if (g_pia_first_request_len == 0 ||
+                        g_pia_capture_pid != pid ||
+                        g_pia_capture_network_id != network_id) {
+                        std::memcpy(g_pia_first_request, g_pia_latest_request,
+                                    g_pia_latest_request_len);
+                        std::memcpy(g_pia_first_reply, data, len);
+                        g_pia_first_request_len = g_pia_latest_request_len;
+                        g_pia_first_reply_len = len;
+                        g_pia_capture_pid = pid;
+                        g_pia_capture_network_id = network_id;
+                        g_pia_first_dirty = true;
+                    }
+                }
+            }
             u32 count = 0;
             if (SampleFlow(8, fd, physical_ip, dst_port, 0, std::addressof(count))) {
-                (void)g_port->GetLanIpConfig(std::addressof(managed_ip), nullptr);
-                Note("browse raw     fd %d len %u body %u physical %08x managed %08x x%u", fd,
-                     (unsigned)len, (unsigned)body_size, physical_ip, managed_ip, count);
+                const u8 system_version = body_size > 0x26 ? body[0x26] : 0xff;
+                const u16 maximum = body_size > 0x25 ?
+                    static_cast<u16>((body[0x24] << 8) | body[0x25]) : 0xffff;
+                const u8 opened = body_size > 0x1AE ? body[0x1AE] : 0xff;
+                Note("[%8llu] browse reply fd %d net %08x open %u players %u/%u sys %u x%u",
+                     (unsigned long long)(armGetSystemTick() / 19200), fd, network_id,
+                     (unsigned)opened, (unsigned)players, (unsigned)maximum,
+                     (unsigned)system_version, count);
+                Note("browse addr    managed@%d physical@%d host %08x",
+                     FindIpOffset(body, body_size, managed_ip),
+                     FindIpOffset(body, body_size, physical_ip),
+                     body_size >= 0x1AF + 35 ?
+                         Fingerprint32(body + 0x1AF, 35) : 0);
+
+                /* MK8D's observed 1298-byte LanSessionInfo is the PIA
+                 * 5.7--5.9 layout: session key param at 0x4F2, followed by a
+                 * 58-byte challenge response. Log fingerprints only. */
+                constexpr size_t SessionKeyOffset = 0x4F2;
+                const size_t response_offset = 5 + body_size;
+                if (body_size >= SessionKeyOffset + 32 && response_offset <= len &&
+                    len - response_offset >= 58) {
+                    const u8 *response = packet + response_offset;
+                    const u32 saved_reply_key = Fingerprint32(body + SessionKeyOffset, 16);
+                    const u32 saved_request_key = Fingerprint32(body + SessionKeyOffset + 16, 16);
+                    const u32 response_key = Fingerprint32(response + 10, 16);
+                    u32 latest_request_key = 0;
+                    u64 latest_request_counter = 0;
+                    bool same_request = false;
+                    {
+                        std::scoped_lock lk(g_browse_observation_lock);
+                        if (g_last_browse_request.pid == pid &&
+                            g_last_browse_request.srcIp == dst_ip) {
+                            latest_request_key = g_last_browse_request.keyHash;
+                            latest_request_counter = g_last_browse_request.counter;
+                            same_request = saved_request_key == latest_request_key;
+                        }
+                    }
+                    Note("[%8llu] crypto v%u e%u c%llx rq%llx k%08x/%08x/%08x m%u",
+                         (unsigned long long)(armGetSystemTick() / 19200),
+                         (unsigned)response[0], (unsigned)response[1],
+                         (unsigned long long)ReadBe64(response + 2),
+                         (unsigned long long)latest_request_counter,
+                         saved_reply_key, saved_request_key, response_key,
+                         same_request ? 1u : 0u);
+                }
+                Note("browse path    physical %08x managed %08x len %u body %u",
+                     physical_ip, managed_ip, (unsigned)len, (unsigned)body_size);
             }
             return g_port->MirrorLanDatagram(vfd, dst_ip, dst_port, data,
                                              static_cast<unsigned int>(len));
@@ -596,14 +895,32 @@ namespace ztnx::mitm {
         }
 
         int ReceiveLanDatagram(u64 pid, s32 fd, void *data, size_t max,
-                               u32 *src_ip, u16 *src_port) {
+                               u32 *src_ip, u16 *src_port, bool peek = false) {
             const s32 vfd = GetLanVfd(pid, fd);
             if (vfd == net::InvalidSocket || g_port == nullptr) { return -1; }
             const int n = g_port->ReceiveLanDatagram(vfd, data, (unsigned int)max,
-                                                     src_ip, src_port);
+                                                     src_ip, src_port, peek);
             if (n >= 0) {
+                /* PIA may probe with MSG_PEEK before consuming a datagram.
+                 * Count and capture the packet once, on the consuming read. */
+                if (!peek) {
+                    ObserveBrowseRequest(pid, fd, data, static_cast<size_t>(n),
+                                         *src_ip, *src_port);
+                } else {
+                    u32 peek_count = 0;
+                    if (SampleFlow(9, fd, *src_ip, *src_port,
+                                   static_cast<u16>(n),
+                                   std::addressof(peek_count))) {
+                        Note("ZT peek         fd %d <- %u.%u.%u.%u:%u len %d x%u",
+                             fd, (unsigned)(*src_ip >> 24),
+                             (unsigned)(*src_ip >> 16) & 0xff,
+                             (unsigned)(*src_ip >> 8) & 0xff,
+                             (unsigned)*src_ip & 0xff, *src_port, n, peek_count);
+                    }
+                }
                 u32 count = 0;
-                if (SampleFlow(2, fd, *src_ip, *src_port, (u16)n, std::addressof(count))) {
+                if (!peek && SampleFlow(2, fd, *src_ip, *src_port,
+                                        (u16)n, std::addressof(count))) {
                     const u8 *bytes = static_cast<const u8 *>(data);
                     const u8 b0 = n > 0 ? bytes[0] : 0;
                     const u8 b1 = n > 1 ? bytes[1] : 0;
@@ -856,17 +1173,74 @@ namespace ztnx::mitm {
     }
 
     void BsdShim::CleanupAbandonedServices() {
+        /* Snapshot candidates BEFORE querying the kernel: a newly launched
+         * process must never be classified dead using an older process list.
+         * Called only by the node maintenance thread, never the SM callback. */
+        static u64 last_tick = 0;
+        const u64 tick = armGetSystemTick();
+        if (tick - last_tick < 19'200'000) { return; }
+        last_tick = tick;
+        u64 candidates[128]{};
+        size_t count = 0;
+        auto remember = [&](u64 pid) {
+            if (pid == 0 || count == 128) { return; }
+            for (size_t i = 0; i < count; ++i) { if (candidates[i] == pid) { return; } }
+            candidates[count++] = pid;
+        };
         {
             std::scoped_lock lk(g_parked_lock);
-            if (!g_parked_forward_services.empty()) {
-                NoteSync("lifetime        releasing %d parked session(s)",
-                         (int)g_parked_forward_services.size());
-                g_parked_forward_services.clear();
-            }
+            for (const auto &entry : g_parked_forward_services) { remember(entry.pid); }
         }
         {
             std::scoped_lock lk(g_client_sessions_lock);
-            for (auto &entry : g_client_sessions) { entry = ClientSessions{}; }
+            for (const auto &entry : g_client_sessions) { remember(entry.pid); }
+        }
+        {
+            /* RegisterClient holds this across a forwarded IPC. Maintenance
+             * must never stall ZeroTier behind a blocked game-side service. */
+            std::unique_lock lk(g_splatoon2_registration_lock, std::try_to_lock);
+            if (!lk.owns_lock()) { return; }
+            remember(g_splatoon2_registered_pid);
+        }
+        if (count == 0) { return; }
+        u64 live[128]{};
+        s32 live_count = 0;
+        const auto rc = svcGetProcessList(&live_count, live, 128);
+        /* Fail closed on denied access or truncation; neither proves exit. */
+        if (R_FAILED(rc) || live_count < 0 || live_count >= 128) { return; }
+        for (size_t i = 0; i < count; ++i) {
+            const u64 pid = candidates[i];
+            if (!net::ProcessListConfirmsExit(pid, live, live_count, 128, true)) { continue; }
+            const int shadows = ForgetLanSocketsForPid(pid);
+            size_t released = 0;
+            {
+                std::scoped_lock lk(g_parked_lock);
+                for (auto it = g_parked_forward_services.begin(); it != g_parked_forward_services.end();) {
+                    if (it->pid != pid) { ++it; continue; }
+                    if (it->service.use_count() > 1) { ++it; continue; }
+                    ReleaseRetiredService(it->service);
+                    it = g_parked_forward_services.erase(it);
+                    ++released;
+                }
+            }
+            {
+                std::unique_lock lk(g_splatoon2_registration_lock, std::try_to_lock);
+                if (!lk.owns_lock()) { continue; } // retain counter for next pass
+                if (g_splatoon2_registered_pid == pid) {
+                    if (g_splatoon2_registration_owner.use_count() > 1) { continue; }
+                    ReleaseRetiredService(g_splatoon2_registration_owner);
+                    g_splatoon2_registered_pid = 0;
+                    g_splatoon2_registered_out = 0;
+                }
+            }
+            {
+                std::scoped_lock lk(g_client_sessions_lock);
+                for (auto &entry : g_client_sessions) {
+                    if (entry.pid == pid) { entry = {}; }
+                }
+            }
+            Note("lifetime reaped pid %llu parked %u shadows %d",
+                 (unsigned long long)pid, (unsigned)released, shadows);
         }
     }
 
@@ -876,21 +1250,31 @@ namespace ztnx::mitm {
         if (m_proxy_registration_owner) {
             const unsigned long long now = armGetSystemTick() / 19200;
             const unsigned long long pid = m_client_info.process_id.value;
-            const int shadows = ForgetLanSocketsForPid(pid);
             bool retained = false;
             {
                 std::scoped_lock lk(g_splatoon2_registration_lock);
-                if (g_splatoon2_registered_pid == pid &&
-                    !g_splatoon2_registration_owner) {
-                    g_splatoon2_registration_owner = std::move(m_forward_service);
+                if (g_splatoon2_registered_pid == pid) {
+                    if (!g_splatoon2_registration_owner) {
+                        g_splatoon2_registration_owner = std::move(m_forward_service);
+                    } else {
+                        m_forward_service.reset();
+                    }
                     retained = true;
                 }
             }
             if (retained) {
-                NoteSync("[%8llu] lifetime registered pid %llu retaining bsd/proxy owner shadows %d",
-                         now, pid, shadows);
+                NoteSync("[%8llu] lifetime registered pid %llu retaining bsd/proxy owner",
+                         now, pid);
                 return;
             }
+        }
+
+        if (ProcessHasExited(m_client_info.process_id.value)) {
+            /* The framework may still own a reference during object teardown.
+             * Let maintenance drop the handle after that reference is gone. */
+            std::scoped_lock lk(g_parked_lock);
+            g_parked_forward_services.push_back({m_client_info.process_id.value, std::move(m_forward_service)});
+            return;
         }
 
         /* Match the working ryu_ldn_nx lifetime policy: only a session that
@@ -900,7 +1284,7 @@ namespace ztnx::mitm {
          * pool before nnSdk attempts a second CreateTransferMemory. */
         if (!m_registered) {
             std::scoped_lock lk(g_parked_lock);
-            g_parked_forward_services.push_back(std::move(m_forward_service));
+            g_parked_forward_services.push_back({m_client_info.process_id.value, std::move(m_forward_service)});
             NoteSync("lifetime        unregistered session parked (#%d held)",
                      (int)g_parked_forward_services.size());
             return;
@@ -908,9 +1292,11 @@ namespace ztnx::mitm {
 
         const unsigned long long now = armGetSystemTick() / 19200;
         const unsigned long long pid = m_client_info.process_id.value;
-        const int shadows = ForgetLanSocketsForPid(m_client_info.process_id.value);
-        NoteSync("[%8llu] lifetime registered pid %llu releasing %s shadows %d",
-                 now, pid, m_proxy_registration ? "bsd/proxy" : "bsd/tmem", shadows);
+        /* Other sessions belonging to this process may still use its socket
+         * table. Explicit Close/ShutdownAllSockets and confirmed process exit
+         * own that cleanup, not destruction of an individual IPC session. */
+        NoteSync("[%8llu] lifetime registered pid %llu releasing %s",
+                 now, pid, m_proxy_registration ? "bsd/proxy" : "bsd/tmem");
         m_forward_service.reset();
         NoteSync("[%8llu] lifetime registered pid %llu released %s",
                  (unsigned long long)(armGetSystemTick() / 19200), pid,
@@ -1032,11 +1418,16 @@ namespace ztnx::mitm {
                 }
 
                 if (g_splatoon2_registered_pid != 0) {
+                    /* The backing buffer is global: never lend it to two
+                     * live BSD registrations. A failed process-list query
+                     * also does not authorize retiring the previous owner. */
+                    R_UNLESS(ProcessHasExited(g_splatoon2_registered_pid), ams::svc::ResultBusy());
+                    R_UNLESS(g_splatoon2_registration_owner.use_count() <= 1, ams::svc::ResultBusy());
                     NoteSync("[%8llu] RegisterClient PROXY retiring owner pid %llx for new pid %llx",
                              (unsigned long long)(armGetSystemTick() / 19200),
                              (unsigned long long)g_splatoon2_registered_pid,
                              (unsigned long long)current_pid);
-                    g_splatoon2_registration_owner.reset();
+                    ReleaseRetiredService(g_splatoon2_registration_owner);
                     g_splatoon2_registered_pid = 0;
                     g_splatoon2_registered_out = 0;
                 }
@@ -1093,6 +1484,10 @@ namespace ztnx::mitm {
                     m_registered = true;
                     m_proxy_registration = true;
                     m_proxy_registration_owner = true;
+                    /* Retain ownership now, not only when the setup object is
+                     * destroyed. An exited game's in-flight forward reference
+                     * must prevent lending its TMEM to the next process. */
+                    g_splatoon2_registration_owner = m_forward_service;
                     g_splatoon2_registered_pid = current_pid;
                     g_splatoon2_registered_out = proxy_out;
                     NoteSync("[%8llu] RegisterClient PROXY complete pid %llx out %llx; client handle %x closing",
@@ -1361,7 +1756,8 @@ namespace ztnx::mitm {
                                       bound_port, "first broadcast");
             }
             overlay_sent = vfd != net::InvalidSocket &&
-                MirrorLanPayload(sockfd, vfd,
+                MirrorLanPayload(m_client_info.process_id.value,
+                                 sockfd, vfd,
                                  dst_ip, port, directed_broadcast,
                                  buf.GetPointer(), buf.GetSize());
             if (overlay_sent) {
@@ -1438,7 +1834,22 @@ namespace ztnx::mitm {
         ZTNX_RET(out);
         const int shadows = out.ret == 0 ?
             ForgetLanSocketsForPid(m_client_info.process_id.value) : 0;
-        Note("ShutdownAllSockets how %d shadows %d", how, shadows);
+        unsigned retired = 0;
+        if (out.ret == 0 && how == SHUT_RDWR) {
+            /* This is a confirmed socket-layer teardown within a live game,
+             * not destruction of one arbitrary IPC session. Release only
+             * sessions that the game already abandoned. The proxy TMEM owner
+             * and all active sessions remain intact for the next LAN attempt. */
+            std::scoped_lock lk(g_parked_lock);
+            for (auto it = g_parked_forward_services.begin(); it != g_parked_forward_services.end();) {
+                if (it->pid != m_client_info.process_id.value) { ++it; continue; }
+                if (it->service.use_count() > 1) { ++it; continue; }
+                ReleaseRetiredService(it->service);
+                it = g_parked_forward_services.erase(it);
+                ++retired;
+            }
+        }
+        Note("ShutdownAllSockets how %d shadows %d retired %u", how, shadows, retired);
         R_SUCCEED();
     }
 
@@ -1599,18 +2010,17 @@ namespace ztnx::mitm {
     Result BsdShim::Recv(ams::sf::Out<s32> ret, ams::sf::Out<s32> err, s32 sockfd, u32 flags,
                          const ams::sf::OutAutoSelectBuffer &buf) {
         constexpr u32 MsgPeek = 0x2;
-        if ((flags & MsgPeek) == 0) {
-            u32 src_ip = 0;
-            u16 src_port = 0;
-            const int n = ReceiveLanDatagram(m_client_info.process_id.value, sockfd,
-                                             buf.GetPointer(), buf.GetSize(),
-                                             std::addressof(src_ip),
-                                             std::addressof(src_port));
-            if (n >= 0) {
-                ret.SetValue(n);
-                err.SetValue(0);
-                R_SUCCEED();
-            }
+        u32 src_ip = 0;
+        u16 src_port = 0;
+        const int n = ReceiveLanDatagram(m_client_info.process_id.value, sockfd,
+                                         buf.GetPointer(), buf.GetSize(),
+                                         std::addressof(src_ip),
+                                         std::addressof(src_port),
+                                         (flags & MsgPeek) != 0);
+        if (n >= 0) {
+            ret.SetValue(n);
+            err.SetValue(0);
+            R_SUCCEED();
         }
         const struct { s32 fd; u32 flags; } in = { sockfd, flags };
         BsdResult out;
@@ -1796,32 +2206,31 @@ namespace ztnx::mitm {
                              const ams::sf::OutAutoSelectBuffer &addr) {
         /* A queued virtual datagram wins over the real socket. Empty queues
          * stay on the normal BSD path, preserving local-LAN traffic, blocking
-         * behavior, and every error code the game already expects. MSG_PEEK is
-         * forwarded because VNet's bounded queue has no peek operation. */
+         * behavior, and every error code the game already expects. MSG_PEEK
+         * returns the virtual head without consuming it, matching BSD. */
         constexpr u32 MsgPeek = 0x2;
-        if ((flags & MsgPeek) == 0) {
-            u32 src_ip = 0;
-            u16 src_port = 0;
-            const int n = ReceiveLanDatagram(m_client_info.process_id.value, sockfd,
-                                             buf.GetPointer(), buf.GetSize(),
-                                             std::addressof(src_ip),
-                                             std::addressof(src_port));
-            if (n >= 0) {
-                if (addr.GetSize() >= 16) {
-                    u8 *sa = static_cast<u8 *>(addr.GetPointer());
-                    std::memset(sa, 0, 16);
-                    sa[0] = 16; sa[1] = 2;  /* sockaddr_in, AF_INET */
-                    sa[2] = (u8)(src_port >> 8); sa[3] = (u8)src_port;
-                    sa[4] = (u8)(src_ip >> 24); sa[5] = (u8)(src_ip >> 16);
-                    sa[6] = (u8)(src_ip >> 8);  sa[7] = (u8)src_ip;
-                    addrlen.SetValue(16);
-                } else {
-                    addrlen.SetValue(0);
-                }
-                ret.SetValue(n);
-                err.SetValue(0);
-                R_SUCCEED();
+        u32 src_ip = 0;
+        u16 src_port = 0;
+        const int n = ReceiveLanDatagram(m_client_info.process_id.value, sockfd,
+                                         buf.GetPointer(), buf.GetSize(),
+                                         std::addressof(src_ip),
+                                         std::addressof(src_port),
+                                         (flags & MsgPeek) != 0);
+        if (n >= 0) {
+            if (addr.GetSize() >= 16) {
+                u8 *sa = static_cast<u8 *>(addr.GetPointer());
+                std::memset(sa, 0, 16);
+                sa[0] = 16; sa[1] = 2;  /* sockaddr_in, AF_INET */
+                sa[2] = (u8)(src_port >> 8); sa[3] = (u8)src_port;
+                sa[4] = (u8)(src_ip >> 24); sa[5] = (u8)(src_ip >> 16);
+                sa[6] = (u8)(src_ip >> 8);  sa[7] = (u8)src_ip;
+                addrlen.SetValue(16);
+            } else {
+                addrlen.SetValue(0);
             }
+            ret.SetValue(n);
+            err.SetValue(0);
+            R_SUCCEED();
         }
         const struct { s32 fd; u32 flags; } in = { sockfd, flags };
         struct { BsdResult r; u32 addrlen; } out;

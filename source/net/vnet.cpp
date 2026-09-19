@@ -401,7 +401,8 @@ namespace ztnx::net {
         return vfd >= 0 && vfd < MaxSockets && m_socks[vfd].used && m_socks[vfd].qCount > 0;
     }
 
-    int VNet::udpRecvFrom(int vfd, void *buf, unsigned int max, u32 *srcIp, u16 *srcPort)
+    int VNet::udpRecvFrom(int vfd, void *buf, unsigned int max,
+                          u32 *srcIp, u16 *srcPort, bool peek)
     {
         if (vfd < 0 || vfd >= MaxSockets || !m_socks[vfd].used) { return -1; }
 
@@ -411,18 +412,20 @@ namespace ztnx::net {
         const int idx = s.qHead;
         Pkt &pk = m_pool[idx];
 
-        s.qHead = pk.next;
-        if (s.qHead < 0) { s.qTail = -1; }
-        s.qCount--;
-
         /* Datagram semantics: an undersized buffer truncates, it does not
-         * leave the remainder queued. */
+         * leave the remainder queued. MSG_PEEK is the exception: it returns
+         * the same truncated view without consuming the datagram. */
         const unsigned int n = (pk.len < max) ? pk.len : max;
         if (n && buf) { memcpy(buf, pk.data, n); }
         if (srcIp)   { *srcIp = pk.srcIp; }
         if (srcPort) { *srcPort = pk.srcPort; }
 
-        freePkt(idx);
+        if (!peek) {
+            s.qHead = pk.next;
+            if (s.qHead < 0) { s.qTail = -1; }
+            s.qCount--;
+            freePkt(idx);
+        }
         return (int)n;
     }
 

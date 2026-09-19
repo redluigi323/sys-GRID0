@@ -79,8 +79,9 @@ namespace ams {
                                  os::MemoryPageSize);
         }
 
-        /* ZeroTier is UDP-only on the wire (9993). The TCP buffers exist only
-         * for the TCP fallback relay, which we do not enable. bsd:s is chosen
+        /* ZeroTier is UDP-only on the wire. The small TCP buffers also serve
+         * bounded router-local UPnP HTTP requests; TCP relay is not enabled.
+         * bsd:s is chosen
          * over bsd:u because bsd:u was cut to 0xF sessions in firmware 18.0.0
          * and games need those. */
         constexpr const ::SocketInitConfig SocketConfig = {
@@ -280,6 +281,7 @@ namespace ams {
         constexpr const psc::PmModuleId PscDependencies[] = {
             psc::PmModuleId_Fs,
             psc::PmModuleId_WlanSockets,
+            psc::PmModuleId_Nifm, // NAT worker must quiesce before route queries stop
         };
 
         /* psc_pm_module_id.hpp has no id for third-party modules, so we borrow

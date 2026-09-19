@@ -230,7 +230,7 @@ $(STRATOSPHERE_ARCHIVE): $(STRATOSPHERE_PATCH_SOURCES)
 # build invocation. Declare this project's five C++ objects here as well so a
 # direct/recovered build from build/ cannot accidentally link only archives.
 ifeq ($(BUILD),$(notdir $(CURDIR)))
-$(OUTPUT).elf : main.o zt_port.o vnet.o bsd_shim.o nifm_shim.o
+$(OUTPUT).elf : main.o zt_port.o vnet.o bsd_shim.o nifm_shim.o nat_mapper.o
 endif
 
 # Produce an SD-root package containing only the sysmodule. The analyzed
@@ -248,7 +248,10 @@ bundle: all overlay-build
 	@touch $(BUNDLE_ROOT)/atmosphere/contents/4200000000005A54/flags/boot2.flag
 	@mkdir -p $(BUNDLE_ROOT)/switch/.overlays
 	@cp -f $(SZT_DIR)overlay/sys-zerotier.ovl $(BUNDLE_ROOT)/switch/.overlays/sys-zerotier.ovl
+	@mkdir -p $(BUNDLE_ROOT)/licenses/sys-zerotier
+	@cp $(ZT_ROOT)/ext/miniupnpc/LICENSE $(BUNDLE_ROOT)/licenses/sys-zerotier/MiniUPnPc.txt
+	@cp $(ZT_ROOT)/ext/libnatpmp/LICENSE $(BUNDLE_ROOT)/licenses/sys-zerotier/libnatpmp.txt
 	@mkdir -p $(SZT_DIR)dist
-	@bsdtar -a -cf $(BUNDLE_ARCHIVE) -C $(BUNDLE_ROOT) atmosphere switch
+	@bsdtar -a -cf $(BUNDLE_ARCHIVE) -C $(BUNDLE_ROOT) atmosphere switch licenses
 	@echo built ... $(BUNDLE_ARCHIVE)
 endif

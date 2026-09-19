@@ -186,13 +186,8 @@ namespace ztnx::mitm {
 
             static bool ShouldMitm(const ams::sm::MitmProcessInfo &client);
 
-            /* Closes every unregistered forward session parked by the
-             * destructor and resets the per-process connection counters. Safe only
-             * at a point where the game is known not to be inside a bsd call --
-             * ryu_ldn_nx calls the equivalent on LDN disconnect, never from a
-             * session teardown. We have no such moment yet, so nothing calls
-             * this; it exists so the leak is bounded by policy rather than by
-             * having nowhere to put the code. */
+            /* Periodic node-thread maintenance. Reclaims parked services and
+             * virtual sockets only for kernel-confirmed exited processes. */
             static void CleanupAbandonedServices();
 
         public:

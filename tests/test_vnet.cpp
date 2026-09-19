@@ -9,6 +9,7 @@
  *   make -C tests && tests/test_vnet
  */
 #include "../source/net/vnet.hpp"
+#include "../source/net/lifetime.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -244,6 +245,13 @@ static void test_udp_receive_and_learn()
 
     char buf[64] = {};
     u32 srcIp = 0; u16 srcPort = 0;
+    char peek[3] = {};
+    expectEqU(v.udpRecvFrom(s, peek, sizeof(peek), &srcIp, &srcPort, true),
+              3, "peek returns truncated view");
+    expect(memcmp(peek, "HEL", 3) == 0, "peek payload");
+    expectEqU(srcIp, PeerIp, "peek source address");
+    expectEqU(srcPort, 40000, "peek source port");
+    expect(v.udpReadable(s), "peek does not drain queue");
     expectEqU(v.udpRecvFrom(s, buf, sizeof(buf), &srcIp, &srcPort), 5, "recvfrom length");
     expect(memcmp(buf, "HELLO", 5) == 0, "payload");
     expectEqU(srcIp, PeerIp, "source address is how peers are discovered");
@@ -591,6 +599,15 @@ static void test_fuzz()
 int main()
 {
     std::printf("vnet tests\n");
+    g_case = "process lifetime";
+    const uint64_t live[] = {42, 77, 99};
+    expect(!ProcessListConfirmsExit(42, live, 3, 4, true), "live owner retained");
+    expect(ProcessListConfirmsExit(43, live, 3, 4, true), "exited owner reaped");
+    expect(!ProcessListConfirmsExit(43, live, 3, 4, false), "query failure retains owner");
+    expect(!ProcessListConfirmsExit(43, live, 3, 3, true), "full/truncated list retains owner");
+    expect(!ProcessListConfirmsExit(43, live, -1, 4, true), "invalid count retains owner");
+    expect(!ProcessListConfirmsExit(0, live, 3, 4, true), "empty registry entry ignored");
+    expect(ProcessListConfirmsExit(43, live, 0, 4, true), "complete empty list permits cleanup");
 
     test_checksum();
     test_arp_reply();

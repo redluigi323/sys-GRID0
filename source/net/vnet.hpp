@@ -84,7 +84,8 @@ namespace ztnx::net {
         int  udpSendTo(int vfd, u32 dstIp, u16 dstPort,
                        const void *buf, unsigned int len);
         int  udpRecvFrom(int vfd, void *buf, unsigned int max,
-                         u32 *srcIp, u16 *srcPort);     /* -1 when empty */
+                         u32 *srcIp, u16 *srcPort,
+                         bool peek = false);            /* -1 when empty */
         bool udpReadable(int vfd) const;
         void udpSetBroadcast(int vfd, bool on);
         u16  udpLocalPort(int vfd) const;

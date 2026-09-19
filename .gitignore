@@ -31,6 +31,7 @@
 **/metricstoken.secret
 build.log
 /tests/test_vnet
+/tests/test_nat_support
 
 # Optional game ExeFS experiments
 /exefs/

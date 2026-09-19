@@ -13,7 +13,7 @@ Here is what is working at the moment:
 - ZeroTier runs as a Horizon sysmodule, joins a network, keeps its identity and
   managed IP, and survives normal sleep and wake.
 - The virtual IPv4 side handles ARP, IPv4, UDP and ICMP. The host tests are at
-  76/76, with fuzz testing of the packet path as well.
+  88/88, with fuzz testing of the packet path as well.
 - The `bsd:u` and `nifm:u` MITMs are doing their job. LAN discovery and game
   sockets can be sent through ZeroTier while ordinary Switch networking keeps
   working too.
@@ -32,6 +32,12 @@ Here is what is working at the moment:
   build keeps the small boot, status and uplink logs running.
 
 ## current limitations
+
+The latest test build adds game-exit/reinitialization cleanup and automatic
+UPnP/NAT-PMP router mapping. Those changes still need repeated-session testing
+on hardware; see [the test notes](LIFECYCLE_NAT_TESTING.md). Router mapping can
+help restrictive connections, but cannot promise a direct path through CGNAT
+or networks that block UDP.
 
 There are still things left to do. Games that only support local wireless mode
 need an `ldn:u` MITM before they can use ZeroTier. The LAN whitelist covers the

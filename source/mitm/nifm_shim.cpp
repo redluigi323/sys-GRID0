@@ -387,6 +387,8 @@ namespace ztnx::mitm {
         state.SetValue(handles[0],true); event.SetValue(handles[1],true); R_SUCCEED();
     }
     Result NifmRequestShim::Cancel() {
+        m_readiness_barrier_complete = false;
+        m_ryujinx_shoal_wait_complete = false;
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
             NoteNifm("ryu cancel title %016llx success",
                      (unsigned long long)m_program_id);
@@ -395,6 +397,8 @@ namespace ztnx::mitm {
         R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 3, .override_pid = m_pid));
     }
     Result NifmRequestShim::Submit() {
+        m_readiness_barrier_complete = false;
+        m_ryujinx_shoal_wait_complete = false;
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
             /* Deliberately do not submit the real Nintendo request. Apart from
              * matching Ryujinx, this prevents NIFM from re-arbitrating the
