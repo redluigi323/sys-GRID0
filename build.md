@@ -1,7 +1,9 @@
 # Building sys-zerotier
 
 These instructions build the sysmodule and its Ultrahand overlay from a clean
-checkout.
+checkout. The supported target is an aarch64 Nintendo Switch running
+Atmosphère.
+
 ## Prerequisites
 
 Install devkitPro with:
@@ -9,7 +11,6 @@ Install devkitPro with:
 - devkitA64
 - libnx
 - the Switch portlibs for curl, zlib and mbedTLS
-- `switch-libjpeg-turbo` (required when compiling the bundled Atmosphere library)
 - `bsdtar` (used to create the release archive)
 - Python 3 (only needed for the reference packet tool)
 
@@ -70,6 +71,8 @@ dist/sys-zerotier.zip
 atmosphere/contents/4200000000005A54/exefs.nsp
 atmosphere/contents/4200000000005A54/flags/boot2.flag
 switch/.overlays/sys-zerotier.ovl
+licenses/sys-zerotier/MiniUPnPc.txt
+licenses/sys-zerotier/libnatpmp.txt
 ```
 
 Extract the archive at the root of the Switch SD card. The sysmodule creates
@@ -97,6 +100,11 @@ default. Existing explicit settings are preserved. Detailed packet/service
 logging is off by default and can be enabled from the overlay while diagnosing
 a compatibility issue.
 
+Router mapping is enabled by default. Set `port_mapping = 0` in `config.ini`
+and reboot to disable it. It tries finite NAT-PMP/UPnP UDP leases on the
+physical router; it cannot bypass carrier-grade NAT or a UDP-blocking firewall.
+See [lifecycle/NAT validation](LIFECYCLE_NAT_TESTING.md) for test steps and limits.
+
 ## Tests and diagnostics
 
 The VNet tests run on the host and do not require a Switch toolchain:
@@ -105,22 +113,6 @@ The VNet tests run on the host and do not require a Switch toolchain:
 make -C tests
 python3 tests/reference.py
 ```
-
-The host suite includes NIFM session ownership and repeated request-recovery
-cycles. These use fake service handles; they do not emulate Nintendo's service
-implementation or prove a console hang is resolved.
-
-For lifecycle changes, validate on hardware from a fresh boot:
-
-1. Enter Splatoon 3 LAN, close the game, then relaunch it and enter LAN again.
-2. Close Splatoon 3 and open another supported LAN title.
-3. In each title, repeat local wireless -> LAN -> local wireless -> LAN at
-   least three times without restarting the sysmodule.
-4. Check ordinary LAN discovery/play and one sleep/wake cycle afterward.
-
-The NIFM ownership fix applies to all supported titles. The rearmed readiness
-barrier applies to the forwarded Nintendo request path; Splatoon 3's separate
-compatibility state/events remain unchanged.
 
 To compile the packet shim for aarch64 as an additional check:
 

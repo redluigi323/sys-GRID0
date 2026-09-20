@@ -29,6 +29,7 @@ endif
 DKA64 := $(DEVKITPRO)/devkitA64
 
 CXX := $(DKA64)/bin/aarch64-none-elf-g++
+CC  := $(DKA64)/bin/aarch64-none-elf-gcc
 AR  := $(DKA64)/bin/aarch64-none-elf-gcc-ar
 
 # This makefile compiles outside the devkitPro template, so nothing adds the
@@ -73,6 +74,28 @@ OBJS := $(patsubst $(ZT_ROOT)/node/%.cpp,$(OUTDIR)/%.o,$(SRCS))
 # Our replacement for the handful of osdep/OSUtils.cpp functions node/ calls.
 OBJS += $(OUTDIR)/ZtOSUtilsSwitch.o
 
+# Upstream's BSD-licensed router-mapping dependencies, without desktop
+# discovery daemons or platform gateway enumeration. Horizon supplies gateway
+# information through NIFM instead.
+UPNP_NAMES := igd_desc_parse minisoap minissdpc miniupnpc miniwget minixml portlistingparse upnpcommands upnpdev upnperrors upnpreplyparse
+OBJS += $(addprefix $(OUTDIR)/upnp_,$(addsuffix .o,$(UPNP_NAMES))) $(OUTDIR)/natpmp.o $(OUTDIR)/nat_support.o
+NAT_CFLAGS := -O2 -g $(ARCH) -ffunction-sections -fdata-sections -MMD -MP \
+              -D__SWITCH__ -DNEED_STRUCT_IP_MREQN -DMINIUPNPC_SET_SOCKET_TIMEOUT \
+              -DOS_STRING='"Horizon"' -DMINIUPNPC_VERSION_STRING='"2.0.20171212"' \
+              -DUPNP_VERSION_STRING='"UPnP/1.1"' -I$(COMPAT_DIR)/nat $(SWITCH_INCLUDES)
+
+$(OUTDIR)/upnp_%.o: $(ZT_ROOT)/ext/miniupnpc/%.c
+	@mkdir -p $(OUTDIR)
+	@$(CC) $(NAT_CFLAGS) -include $(COMPAT_DIR)/nat/platform.h -c $< -o $@
+
+$(OUTDIR)/natpmp.o: $(ZT_ROOT)/ext/libnatpmp/natpmp.c
+	@mkdir -p $(OUTDIR)
+	@$(CC) $(NAT_CFLAGS) -include arpa/inet.h -Drecvfrom=ztnx_nat_recvfrom -c $< -o $@
+
+$(OUTDIR)/nat_support.o: $(COMPAT_DIR)/nat/support.c
+	@mkdir -p $(OUTDIR)
+	@$(CC) $(NAT_CFLAGS) -c $< -o $@
+
 $(OUTDIR)/ZtOSUtilsSwitch.o: $(COMPAT_DIR)/ZtOSUtilsSwitch.cpp
 	@mkdir -p $(OUTDIR)
 	@echo "  CXX $(notdir $<)"
@@ -90,7 +113,11 @@ endif
 DEPS := $(OBJS:.o=.d)
 -include $(DEPS)
 
+# Compiler flags and selected compatibility sources are part of the build.
+$(OBJS): $(THIS_DIR)zt-core.mk
+
 $(OUTDIR)/libztcore.a: $(OBJS)
+	@$(RM) $@
 	@$(AR) rcs $@ $^
 	@echo "built $@ ($(words $(OBJS)) objects)"
 

@@ -5,6 +5,7 @@
  */
 #include "zt_port.hpp"
 #include "mitm/bsd_shim.hpp"
+#include "nat_mapper.hpp"
 
 #include <stratosphere.hpp>
 
@@ -556,6 +557,8 @@ namespace ztnx {
             "bsd_mitm = 1\n"
             "nifm_mitm = 1\n"
             "debug_logging = 0\n"
+            "# Try finite UPnP/NAT-PMP UDP mappings on the physical router.\n"
+            "port_mapping = 1\n"
             "\n"
             "# Bring-up announcement. The console broadcasts an ICMP echo to the\n"
             "# subnet broadcast address every 5 seconds, so every other member\n"
@@ -753,6 +756,29 @@ namespace ztnx {
     }
 
     bool WriteTextFile(const char *path, const char *text) { return WriteWholeFile(path, text); }
+
+    bool WriteBinaryFile(const char *path, const void *data, size_t len)
+    {
+        if (path == nullptr || (data == nullptr && len != 0)) { return false; }
+        (void)fs::DeleteFile(path);
+        if (R_FAILED(fs::CreateFile(path, static_cast<s64>(len)))) {
+            ++g_writeFails;
+            return false;
+        }
+
+        fs::FileHandle f;
+        if (R_FAILED(fs::OpenFile(std::addressof(f), path, fs::OpenMode_Write))) {
+            ++g_writeFails;
+            return false;
+        }
+        ON_SCOPE_EXIT { fs::CloseFile(f); };
+
+        if (R_FAILED(fs::WriteFile(f, 0, data, len, fs::WriteOption::Flush))) {
+            ++g_writeFails;
+            return false;
+        }
+        return true;
+    }
 
     void FlushTrace()
     {
@@ -991,12 +1017,15 @@ namespace ztnx {
         (void)fs::WriteFile(f, 0, data, len, fs::WriteOption::Flush);
     }
 
-    int Port::cbWireSend(ZT_Node *, void *uptr, void *, int64_t,
+    int Port::cbWireSend(ZT_Node *, void *uptr, void *, int64_t localSocket,
                          const struct sockaddr_storage *addr, const void *data,
                          unsigned int len, unsigned int)
     {
         auto *self = static_cast<Port *>(uptr);
         if (self->m_wireFd < 0) return -1;
+        const bool mapped = localSocket > 0;
+        if (mapped && (localSocket != self->m_mappedSocketId || self->m_mappedFd < 0)) return -1;
+        const int fd = mapped ? self->m_mappedFd : self->m_wireFd;
 
         /* The wire socket is AF_INET. ZeroTier keeps offering IPv6 endpoints
          * for its roots, and sendto() rejects every one with EINVAL -- that was
@@ -1013,7 +1042,7 @@ namespace ztnx {
         self->m_wireLastDstPort = ntohs(dst->sin_port);
 
         const socklen_t alen = sizeof(struct sockaddr_in);
-        const ssize_t n = ::sendto(self->m_wireFd, data, len, 0,
+        const ssize_t n = ::sendto(fd, data, len, 0,
                                  (const struct sockaddr *)addr, alen);
         if (n == (ssize_t)len) {
             ++self->m_wireTx;
@@ -1026,7 +1055,7 @@ namespace ztnx {
         /* Record rather than log: this is the packet path, and a console that
          * has lost its route fails every send. heartbeat() reports the rate. */
         ++self->m_wireTxFail;
-        ++self->m_wireFailStreak;
+        if (!mapped) ++self->m_wireFailStreak;
         self->m_wireErrno = errno;
         self->m_wireReachable.store(false, std::memory_order_release);
         return -1;
@@ -1079,10 +1108,10 @@ namespace ztnx {
     }
 
     int Port::ReceiveLanDatagram(int vfd, void *data, unsigned int max,
-                                  u32 *src_ip, u16 *src_port)
+                                  u32 *src_ip, u16 *src_port, bool peek)
     {
         std::scoped_lock lk(m_vnetLock);
-        return m_vnet.udpRecvFrom(vfd, data, max, src_ip, src_port);
+        return m_vnet.udpRecvFrom(vfd, data, max, src_ip, src_port, peek);
     }
 
     void Port::CloseLanSocket(int vfd)
@@ -1307,6 +1336,7 @@ namespace ztnx {
         }
 
         Trace("port: joined");
+        m_natEnabled = StartNatMapper(ZT_Node_address(m_node));
         m_startedMs = NowMs();
 
         /* Echo the configuration we actually parsed.
@@ -1436,7 +1466,7 @@ namespace ztnx {
          * see the edge regardless of which got there first. */
         os::Event g_quiesced(os::EventClearMode_ManualClear);
         os::Event g_resumed (os::EventClearMode_ManualClear);
-        bool      g_sleepRequested = false;
+        std::atomic<bool> g_sleepRequested{false};
     }
 
     void RequestQuiesce()
@@ -1487,6 +1517,71 @@ namespace ztnx {
         return true;
     }
 
+    void Port::closeNatWire()
+    {
+        ConfigureNatMapper(0);
+        if (m_mappedFd >= 0) { ::close(m_mappedFd); m_mappedFd = -1; }
+        m_mappedPort = 0;
+        if (m_node && (m_natAddress || m_natPublicPort)) ZT_Node_clearLocalInterfaceAddresses(m_node);
+        m_natAddress = 0; m_natPublicPort = 0;
+    }
+
+    void Port::maintainNatWire()
+    {
+        if (!m_natEnabled) return;
+        if (m_wireFd < 0) { closeNatWire(); return; }
+        if (m_mappedFd < 0 && m_wireReachable.load(std::memory_order_acquire) && NowMs() >= m_natRetryMs) {
+            m_natRetryMs = NowMs() + 30000;
+            const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+            if (fd >= 0) {
+                sockaddr_in local{};
+                local.sin_family = AF_INET;
+                local.sin_port = htons(20000 + (ZT_Node_address(m_node) % 40000));
+                if (::bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof(local)) == 0) {
+                    m_mappedFd = fd;
+                    m_mappedPort = ntohs(local.sin_port);
+                    ++m_mappedSocketId;
+                    ConfigureNatMapper(m_mappedPort);
+                } else { ::close(fd); }
+            }
+        }
+        const auto endpoint = GetNatEndpoint();
+        if (endpoint.address != m_natAddress || endpoint.port != m_natPublicPort) {
+            ZT_Node_clearLocalInterfaceAddresses(m_node);
+            m_natAddress = endpoint.address; m_natPublicPort = endpoint.port;
+            if (m_mappedFd >= 0 && endpoint.address && endpoint.port) {
+                sockaddr_storage surface{};
+                auto *ipv4 = reinterpret_cast<sockaddr_in *>(&surface);
+                ipv4->sin_family = AF_INET; ipv4->sin_addr.s_addr = endpoint.address;
+                ipv4->sin_port = htons(endpoint.port);
+                ZT_Node_addLocalInterfaceAddress(m_node, &surface);
+            }
+        }
+        if (m_mappedFd < 0) return;
+        pollfd pfd{m_mappedFd, POLLIN, 0};
+        if (::poll(&pfd, 1, 0) <= 0) return;
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) { closeNatWire(); return; }
+        if (!(pfd.revents & POLLIN)) return;
+        uint8_t packet[2048];
+        /* The primary poll can sleep for 10 ms. Drain a bounded burst here,
+         * otherwise mapped-only traffic would be artificially capped at
+         * 100 datagrams/s regardless of the actual connection bandwidth. */
+        for (unsigned burst = 0; burst < 16; ++burst) {
+            sockaddr_storage from{};
+            socklen_t length = sizeof(from);
+            const auto n = ::recvfrom(m_mappedFd, packet, sizeof(packet), MSG_DONTWAIT,
+                                     reinterpret_cast<sockaddr *>(&from), &length);
+            if (n <= 0) break;
+            ++m_wireRx;
+            m_wireReachable.store(true, std::memory_order_release);
+            if (m_wireRecovering) m_wireRecoveryConfirmed = true;
+            volatile int64_t deadline = 0;
+            ZT_Node_processWirePacket(m_node, nullptr, NowMs(), m_mappedSocketId,
+                                      &from, packet, static_cast<unsigned>(n), &deadline);
+            m_nextDeadline = deadline;
+        }
+    }
+
     void Port::HandleSleep()
     {
         /* Everything that touches fs or bsd has to happen HERE, while those
@@ -1494,6 +1589,8 @@ namespace ztnx {
          * declared them as dependencies, and it is holding the transition open
          * until we acknowledge. Write the log line first, then let go. */
         ztnx::Event("SLEEP    quiescing: tx %u rx %u fail %u", m_wireTx, m_wireRx, m_wireTxFail);
+        if (!QuiesceNatMapper()) ztnx::Event("SLEEP    NAT worker quiesce timeout");
+        closeNatWire();
 
         if (m_wireFd >= 0) {
             m_wireReachable.store(false, std::memory_order_release);
@@ -1651,6 +1748,7 @@ namespace ztnx {
                     m_wireHup ? " + POLLHUP" : "", m_wireFd);
 
         const int doomed = m_wireFd;
+        closeNatWire();
         m_wireReachable.store(false, std::memory_order_release);
         m_wireFd = -1;              /* nothing may touch it while close runs */
         ::close(doomed);
@@ -1875,6 +1973,7 @@ namespace ztnx {
 
             /* 1. wire -> node */
             this->maintainWireSocket();
+            this->maintainNatWire();
 
             /* poll() is the only thing pacing this loop. With the socket down
              * there is nothing to poll, so sleep the same 10 ms by hand --
@@ -1935,6 +2034,7 @@ namespace ztnx {
             this->watchSystemMemory();
             this->writePeers();
             ztnx::mitm::FlushObservations();
+            ztnx::mitm::BsdShim::CleanupAbandonedServices();
             this->probePeer();
             TraceArenaWatermark();
 
@@ -2014,6 +2114,7 @@ namespace ztnx {
             "uptime    %llu s   loops %llu\n"
             "wire      fd %d  %s  local %u (%s)  tx %u  rx %u  fail %u  v6skip %u  errno %d %s\n"
             "wirelast  dst %u.%u.%u.%u:%u\n"
+            "nat       %s local %u public %u.%u.%u.%u:%u\n"
             "poll      err %u (%s)  timeout %u  hup %u\n"
             "writefail %u\n"
             "network   %.16llx\n"
@@ -2037,6 +2138,10 @@ namespace ztnx {
             (unsigned)((m_wireLastDstIp >> 8) & 0xFF),
             (unsigned)(m_wireLastDstIp & 0xFF),
             (unsigned)m_wireLastDstPort,
+            m_natEnabled ? "enabled" : "disabled", unsigned(m_mappedPort),
+            unsigned((ntohl(m_natAddress) >> 24) & 255), unsigned((ntohl(m_natAddress) >> 16) & 255),
+            unsigned((ntohl(m_natAddress) >> 8) & 255), unsigned(ntohl(m_natAddress) & 255),
+            unsigned(m_natPublicPort),
             m_pollErr, ErrnoName(m_pollErrno), m_pollZero, m_pollBad,
             g_writeFails,
             (unsigned long long)m_nwid,
@@ -2063,6 +2168,8 @@ namespace ztnx {
 
     void Port::Finalize()
     {
+        QuiesceNatMapper();
+        closeNatWire();
         m_wireReachable.store(false, std::memory_order_release);
         if (m_node)   { ZT_Node_delete(m_node); m_node = nullptr; }
         if (m_wireFd >= 0) { ::close(m_wireFd); m_wireFd = -1; }

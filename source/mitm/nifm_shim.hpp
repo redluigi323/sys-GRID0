@@ -2,15 +2,11 @@
 #pragma once
 
 #include <stratosphere.hpp>
-#include "nifm_lifetime.hpp"
 
 namespace ztnx { class Port; }
 namespace ztnx::mitm {
     namespace hos = ::ams::hos;
     using Result = ::ams::Result;
-    /* libnx serviceClose has internal linkage. Give the owning template an
-     * external-linkage closer so these IPC class types agree across units. */
-    inline void CloseNifmService(Service *service) { serviceClose(service); }
     struct NifmIpV4Address { u8 addr[4]; };
     struct NifmIpAddressSetting { u8 automatic; NifmIpV4Address current, mask, gateway; };
     struct NifmDnsSetting { u8 automatic; NifmIpV4Address primary, secondary; };
@@ -116,10 +112,10 @@ AMS_SF_DEFINE_INTERFACE(ztnx::mitm, INifmShim, AMS_ZTNX_NIFM_ROOT, 0x5A544E46)
 
 namespace ztnx::mitm {
     class NifmRequestShim {
-        NifmServiceOwner<Service, CloseNifmService> m_forward;
+        Service m_forward;
         u64 m_pid;
         u64 m_program_id;
-        NifmReadinessBarrier m_readiness_barrier;
+        bool m_readiness_barrier_complete{false};
         s8 m_connection_confirmation_option{0};
         bool m_ryujinx_shoal_wait_complete{false};
         ams::os::SystemEvent m_ryujinx_state_event;
@@ -128,17 +124,23 @@ namespace ztnx::mitm {
       public:
         NifmRequestShim(Service forward, u64 pid, u64 program_id) :
             m_forward(forward), m_pid(pid), m_program_id(program_id) { }
+        ~NifmRequestShim() { serviceClose(std::addressof(m_forward)); }
+        NifmRequestShim(const NifmRequestShim &) = delete;
+        NifmRequestShim &operator=(const NifmRequestShim &) = delete;
         #define ZTNX_DECLARE(C, I, R, N, A, AN, V0, V1) R N A;
         AMS_ZTNX_NIFM_REQUEST(NifmRequestShim, ZTNX_DECLARE)
         #undef ZTNX_DECLARE
     };
     class NifmGeneralShim {
-        NifmServiceOwner<Service, CloseNifmService> m_forward;
+        Service m_forward;
         u64 m_pid;
         u64 m_program_id;
       public:
         NifmGeneralShim(Service forward, u64 pid, u64 program_id) :
             m_forward(forward), m_pid(pid), m_program_id(program_id) { }
+        ~NifmGeneralShim() { serviceClose(std::addressof(m_forward)); }
+        NifmGeneralShim(const NifmGeneralShim &) = delete;
+        NifmGeneralShim &operator=(const NifmGeneralShim &) = delete;
         #define ZTNX_DECLARE(C, I, R, N, A, AN, V0, V1) R N A;
         AMS_ZTNX_NIFM_GENERAL(NifmGeneralShim, ZTNX_DECLARE)
         #undef ZTNX_DECLARE

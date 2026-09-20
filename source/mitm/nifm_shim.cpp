@@ -94,7 +94,7 @@ namespace ztnx::mitm {
          * invalid Service. The compatibility methods below may still expose
          * Ryujinx-like state/events, but uncommon methods remain wire-exact. */
         R_TRY(serviceMitmDispatchIn(
-            m_forward.get(), 4, type,
+            std::addressof(m_forward), 4, type,
             .out_num_objects = 1, .out_objects = std::addressof(request),
             .override_pid = m_pid));
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
@@ -108,14 +108,14 @@ namespace ztnx::mitm {
     Result NifmGeneralShim::GetClientId(ams::sf::Out<NifmClientIdData> out) {
         NoteForward(1);
         R_RETURN(serviceMitmDispatch(
-            m_forward.get(), 1,
+            std::addressof(m_forward), 1,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcPointer | SfBufferAttr_FixedSize },
             .buffers = { { out.GetPointer(), sizeof(NifmClientIdData) } },
             .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetCurrentNetworkProfile(ams::sf::Out<NifmSfNetworkProfileData> out) {
         R_TRY(serviceMitmDispatch(
-            m_forward.get(), 5,
+            std::addressof(m_forward), 5,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcPointer | SfBufferAttr_FixedSize },
             .buffers = { { out.GetPointer(), sizeof(NifmSfNetworkProfileData) } },
             .override_pid = m_pid));
@@ -126,7 +126,7 @@ namespace ztnx::mitm {
                                                      const ams::sf::OutMapAliasBuffer &out_profiles) {
         NoteForward(7);
         R_RETURN(serviceMitmDispatchInOut(
-            m_forward.get(), 7, type, *out_count,
+            std::addressof(m_forward), 7, type, *out_count,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcMapAlias },
             .buffers = { { out_profiles.GetPointer(), out_profiles.GetSize() } },
             .override_pid = m_pid));
@@ -134,7 +134,7 @@ namespace ztnx::mitm {
     Result NifmGeneralShim::GetNetworkProfile(ams::sf::Out<NifmSfNetworkProfileData> out,
                                               const NifmUuid &profile_id) {
         R_TRY(serviceMitmDispatchIn(
-            m_forward.get(), 8, profile_id,
+            std::addressof(m_forward), 8, profile_id,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcPointer | SfBufferAttr_FixedSize },
             .buffers = { { out.GetPointer(), sizeof(NifmSfNetworkProfileData) } },
             .override_pid = m_pid));
@@ -145,129 +145,129 @@ namespace ztnx::mitm {
                                               const NifmSfNetworkProfileData &profile) {
         NoteForward(9);
         R_RETURN(serviceMitmDispatchOut(
-            m_forward.get(), 9, *out_profile_id,
+            std::addressof(m_forward), 9, *out_profile_id,
             .buffer_attrs = { SfBufferAttr_In | SfBufferAttr_HipcPointer | SfBufferAttr_FixedSize },
             .buffers = { { std::addressof(profile), sizeof(NifmSfNetworkProfileData) } },
             .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetCurrentIpAddress(ams::sf::Out<NifmIpV4Address> out) {
         NifmIpV4Address value{};
-        R_TRY(serviceMitmDispatchOut(m_forward.get(), 12, value, .override_pid = m_pid));
+        R_TRY(serviceMitmDispatchOut(std::addressof(m_forward), 12, value, .override_pid = m_pid));
         u32 ip=0, mask=0; if (GetIp(std::addressof(ip), std::addressof(mask))) { PutIp(value, ip); NoteNifm("nifm IPv4        %u.%u.%u.%u", value.addr[0],value.addr[1],value.addr[2],value.addr[3]); } *out=value; R_SUCCEED();
     }
     Result NifmGeneralShim::GetCurrentIpConfigInfo(ams::sf::Out<NifmIpConfigInfo> out) {
         NifmIpConfigInfo value{};
-        R_TRY(serviceMitmDispatchOut(m_forward.get(), 15, value, .override_pid = m_pid));
+        R_TRY(serviceMitmDispatchOut(std::addressof(m_forward), 15, value, .override_pid = m_pid));
         (void)RewriteIpConfig(value, "config");
         *out=value; R_SUCCEED();
     }
     Result NifmGeneralShim::IsWirelessCommunicationEnabled(ams::sf::Out<u8> out) {
         NoteForward(17);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 17, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 17, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetInternetConnectionStatus(ams::sf::Out<NifmInternetConnectionStatus> out) {
         NoteForward(18);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 18, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 18, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsEthernetCommunicationEnabled(ams::sf::Out<u8> out) {
         NoteForward(20);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 20, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 20, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsAnyInternetRequestAccepted(ams::sf::Out<u8> out,
                                                          const NifmClientIdData &client_id) {
         NoteForward(21);
         R_RETURN(serviceMitmDispatchOut(
-            m_forward.get(), 21, *out,
+            std::addressof(m_forward), 21, *out,
             .buffer_attrs = { SfBufferAttr_In | SfBufferAttr_HipcPointer | SfBufferAttr_FixedSize },
             .buffers = { { std::addressof(client_id), sizeof(NifmClientIdData) } },
             .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsAnyForegroundRequestAccepted(ams::sf::Out<u8> out) {
         NoteForward(22);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 22, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 22, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::PutToSleep() {
         NoteForward(23);
-        R_RETURN(serviceMitmDispatch(m_forward.get(), 23, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 23, .override_pid = m_pid));
     }
     Result NifmGeneralShim::WakeUp() {
         NoteForward(24);
-        R_RETURN(serviceMitmDispatch(m_forward.get(), 24, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 24, .override_pid = m_pid));
     }
     Result NifmGeneralShim::SetWowlDelayedWakeTime(s32 value) {
         NoteForward(43);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 43, value, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 43, value, .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsWiredConnectionAvailable(ams::sf::Out<u8> out) {
         NoteForward(44);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 44, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 44, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsNetworkEmulationFeatureEnabled(ams::sf::Out<u8> out) {
         NoteForward(45);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 45, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 45, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::SelectActiveNetworkEmulationProfileIdForDebug(u32 profile_id) {
         NoteForward(46);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 46, profile_id, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 46, profile_id, .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetScanData(ams::sf::Out<u32> out_count, u32 filter,
                                         const ams::sf::OutMapAliasBuffer &out_data) {
         NoteForward(47);
         R_RETURN(serviceMitmDispatchInOut(
-            m_forward.get(), 47, filter, *out_count,
+            std::addressof(m_forward), 47, filter, *out_count,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcMapAlias },
             .buffers = { { out_data.GetPointer(), out_data.GetSize() } },
             .override_pid = m_pid));
     }
     Result NifmGeneralShim::ResetActiveNetworkEmulationProfileId() {
         NoteForward(48);
-        R_RETURN(serviceMitmDispatch(m_forward.get(), 48, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 48, .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetActiveNetworkEmulationProfileId(ams::sf::Out<u32> out) {
         NoteForward(49);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 49, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 49, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsRewriteFeatureEnabled(ams::sf::Out<u8> out) {
         NoteForward(50);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 50, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 50, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::CreateRewriteRule(ams::sf::Out<u64> out_rule_id, u8 enabled,
                                               const NifmRewriteRuleData &rule) {
         NoteForward(51);
         R_RETURN(serviceMitmDispatchInOut(
-            m_forward.get(), 51, enabled, *out_rule_id,
+            std::addressof(m_forward), 51, enabled, *out_rule_id,
             .buffer_attrs = { SfBufferAttr_In | SfBufferAttr_HipcMapAlias | SfBufferAttr_FixedSize },
             .buffers = { { std::addressof(rule), sizeof(rule) } },
             .override_pid = m_pid));
     }
     Result NifmGeneralShim::DestroyRewriteRule(u64 rule_id) {
         NoteForward(52);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 52, rule_id, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 52, rule_id, .override_pid = m_pid));
     }
     Result NifmGeneralShim::IsActiveNetworkEmulationProfileIdSelected(ams::sf::Out<u8> out) {
         NoteForward(53);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 53, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 53, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::SelectDefaultNetworkEmulationProfileId(u32 profile_id) {
         NoteForward(54);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 54, profile_id, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 54, profile_id, .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetDefaultNetworkEmulationProfileId(ams::sf::Out<u32> out) {
         NoteForward(55);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 55, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 55, *out, .override_pid = m_pid));
     }
     Result NifmGeneralShim::GetNetworkEmulationProfile(ams::sf::Out<NifmNetworkEmulationProfile> out,
                                                        u32 profile_id) {
         NoteForward(56);
         R_RETURN(serviceMitmDispatchIn(
-            m_forward.get(), 56, profile_id,
+            std::addressof(m_forward), 56, profile_id,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcAutoSelect | SfBufferAttr_FixedSize },
             .buffers = { { out.GetPointer(), sizeof(NifmNetworkEmulationProfile) } },
             .override_pid = m_pid));
     }
     Result NifmGeneralShim::SetWowlTcpKeepAliveTimeout(u32 timeout) {
         NoteForward(57);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 57, timeout, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 57, timeout, .override_pid = m_pid));
     }
     Result NifmRequestShim::GetRequestState(ams::sf::Out<u32> out) {
         /* Ryujinx's known-working Splatoon 3 LAN path does not submit a host
@@ -306,7 +306,7 @@ namespace ztnx::mitm {
 
         u32 state = 0;
         const Result rc = serviceMitmDispatchOut(
-            m_forward.get(), 0, state, .override_pid = m_pid);
+            std::addressof(m_forward), 0, state, .override_pid = m_pid);
         if (R_SUCCEEDED(rc)) {
             /* HOS reported Available roughly three seconds before ZeroTier's
              * UDP/9993 transport recovered in the 2026-08-27 Shoal capture.
@@ -315,8 +315,9 @@ namespace ztnx::mitm {
              * instead. The node runs on another thread and can recover while
              * we wait. A strict timeout preserves stock behavior if the
              * virtual network cannot come back. */
-            if (FindLanTitle(m_program_id) != nullptr && g_port != nullptr &&
-                m_readiness_barrier.Observe(state)) {
+            if (state == 3 && !m_readiness_barrier_complete &&
+                FindLanTitle(m_program_id) != nullptr && g_port != nullptr) {
+                m_readiness_barrier_complete = true;
                 if (!g_port->LanTransportReady()) {
                     const int64_t started = ztnx::NowMs();
                     NoteNifm("barrier title %016llx waiting for ZT wire",
@@ -349,7 +350,7 @@ namespace ztnx::mitm {
          * ignores GetResult success until IRequest reaches state 3, so the
          * earlier 0x8AE6E/0xDE6E normalization changed no game behavior. */
         R_RETURN(serviceMitmDispatch(
-            m_forward.get(), 1, .override_pid = m_pid));
+            std::addressof(m_forward), 1, .override_pid = m_pid));
     }
     Result NifmRequestShim::GetEvents(ams::sf::OutCopyHandle state, ams::sf::OutCopyHandle event) {
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
@@ -382,20 +383,22 @@ namespace ztnx::mitm {
         }
 
         ::Handle handles[2]={INVALID_HANDLE,INVALID_HANDLE};
-        R_TRY(serviceMitmDispatch(m_forward.get(),2,.out_handle_attrs={SfOutHandleAttr_HipcCopy,SfOutHandleAttr_HipcCopy},.out_handles=handles,.override_pid=m_pid));
+        R_TRY(serviceMitmDispatch(std::addressof(m_forward),2,.out_handle_attrs={SfOutHandleAttr_HipcCopy,SfOutHandleAttr_HipcCopy},.out_handles=handles,.override_pid=m_pid));
         state.SetValue(handles[0],true); event.SetValue(handles[1],true); R_SUCCEED();
     }
     Result NifmRequestShim::Cancel() {
+        m_readiness_barrier_complete = false;
+        m_ryujinx_shoal_wait_complete = false;
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
             NoteNifm("ryu cancel title %016llx success",
                      (unsigned long long)m_program_id);
             R_SUCCEED();
         }
-        const Result rc = serviceMitmDispatch(m_forward.get(), 3, .override_pid = m_pid);
-        if (R_SUCCEEDED(rc)) { m_readiness_barrier.Reset(); }
-        R_RETURN(rc);
+        R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 3, .override_pid = m_pid));
     }
     Result NifmRequestShim::Submit() {
+        m_readiness_barrier_complete = false;
+        m_ryujinx_shoal_wait_complete = false;
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
             /* Deliberately do not submit the real Nintendo request. Apart from
              * matching Ryujinx, this prevents NIFM from re-arbitrating the
@@ -405,17 +408,15 @@ namespace ztnx::mitm {
                      (unsigned long long)m_program_id);
             R_SUCCEED();
         }
-        const Result rc = serviceMitmDispatch(m_forward.get(), 4, .override_pid = m_pid);
-        if (R_SUCCEEDED(rc)) { m_readiness_barrier.Reset(); }
-        R_RETURN(rc);
+        R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 4, .override_pid = m_pid));
     }
     Result NifmRequestShim::SetRequirement(const NifmRequirement &requirement) {
         NoteForward(5);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 5, requirement, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 5, requirement, .override_pid = m_pid));
     }
     Result NifmRequestShim::SetNetworkProfileId(const NifmUuid &profile_id) {
         NoteForward(9);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 9, profile_id, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 9, profile_id, .override_pid = m_pid));
     }
     Result NifmRequestShim::SetConnectionConfirmationOption(s8 option) {
         if (UsesRyujinxNifmRequestModel(m_program_id)) {
@@ -428,41 +429,41 @@ namespace ztnx::mitm {
             R_SUCCEED();
         }
         R_RETURN(serviceMitmDispatchIn(
-            m_forward.get(), 11, option, .override_pid = m_pid));
+            std::addressof(m_forward), 11, option, .override_pid = m_pid));
     }
     Result NifmRequestShim::SetPersistent() {
         NoteForward(12);
-        R_RETURN(serviceMitmDispatch(m_forward.get(), 12, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatch(std::addressof(m_forward), 12, .override_pid = m_pid));
     }
     Result NifmRequestShim::GetRequirement(ams::sf::Out<NifmRequirement> out) {
         NoteForward(19);
-        R_RETURN(serviceMitmDispatchOut(m_forward.get(), 19, *out, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchOut(std::addressof(m_forward), 19, *out, .override_pid = m_pid));
     }
     Result NifmRequestShim::GetAppletInfo(ams::sf::Out<NifmAppletInfo> out, u32 theme_color,
                                           const ams::sf::OutMapAliasBuffer &out_data) {
         NoteForward(21);
         R_RETURN(serviceMitmDispatchInOut(
-            m_forward.get(), 21, theme_color, *out,
+            std::addressof(m_forward), 21, theme_color, *out,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcMapAlias },
             .buffers = { { out_data.GetPointer(), out_data.GetSize() } },
             .override_pid = m_pid));
     }
     Result NifmRequestShim::SetKeptInSleep(u8 kept) {
         NoteForward(23);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 23, kept, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 23, kept, .override_pid = m_pid));
     }
     Result NifmRequestShim::RegisterSocketDescriptor(s32 fd) {
         NoteForward(24);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 24, fd, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 24, fd, .override_pid = m_pid));
     }
     Result NifmRequestShim::UnregisterSocketDescriptor(s32 fd) {
         NoteForward(25);
-        R_RETURN(serviceMitmDispatchIn(m_forward.get(), 25, fd, .override_pid = m_pid));
+        R_RETURN(serviceMitmDispatchIn(std::addressof(m_forward), 25, fd, .override_pid = m_pid));
     }
     Result NifmRequestShim::GetNetworkAccessStatus(ams::sf::Out<NifmNetworkAccessStatus> out) {
         NoteForward(26);
         R_RETURN(serviceMitmDispatch(
-            m_forward.get(), 26,
+            std::addressof(m_forward), 26,
             .buffer_attrs = { SfBufferAttr_Out | SfBufferAttr_HipcPointer | SfBufferAttr_FixedSize },
             .buffers = { { out.GetPointer(), sizeof(NifmNetworkAccessStatus) } },
             .override_pid = m_pid));
