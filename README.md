@@ -1,6 +1,6 @@
 # sys-GRID0
 
-A very work in progress port of ZeroTier with the GRID0 network to the nintendo switch as a sysmodule, very AI assisted in the making, yet extremely functional with better results than i had hoped. Get the latest release from the releases page, or read the build instructions in build.md
+A port of ZeroTier with the GRID0 network to the nintendo switch as a sysmodule, very AI assisted in the making, yet extremely functional with better results than i had hoped. Get the latest release from the releases page, or read the build instructions in build.md
 
 ## where sys-GRID0 is at right now
 
