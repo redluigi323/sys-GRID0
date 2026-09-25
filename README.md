@@ -1,8 +1,8 @@
-# sys-zerotier
+# sys-GRID0
 
-A very work in progress port of ZeroTier to the nintendo switch as a sysmodule, very AI assisted in the making, yet extremely functional with better results than i had hoped. Get the latest release from the releases page, or read the build instructions in build.md
+A very work in progress port of ZeroTier with the GRID0 network to the nintendo switch as a sysmodule, very AI assisted in the making, yet extremely functional with better results than i had hoped. Get the latest release from the releases page, or read the build instructions in build.md
 
-## where sys-zerotier is at right now
+## where sys-GRID0 is at right now
 
 The whole point of this was to make native LAN play work over the internet
 without needing a PC relay or another console sitting on the same network. We
@@ -25,7 +25,7 @@ Here is what is working at the moment:
   network change without rebooting, and has switches for the sysmodule, BSD,
   NIFM and detailed logging.
 - New installs turn on the sysmodule and both MITMs automatically. Saved
-  networks live in `/config/sys-zerotier/networks.ini`, so an update does not
+  networks live in `/config/sys-GRID0/networks.ini`, so an update does not
   wipe them out.
 - A lot of memory work and logging cleanup has gone into keeping the module
   alive on real hardware. The larger BSD/NIFM logs are optional; the normal
